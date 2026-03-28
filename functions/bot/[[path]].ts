@@ -15,6 +15,47 @@ type Station = {
 
 const app = new Hono<{ Bindings: Bindings }>().basePath("/bot");
 
+// Save or update user info from Telegram
+async function upsertUser(
+  db: D1Database,
+  from: {
+    id: number;
+    first_name: string;
+    last_name?: string;
+    username?: string;
+    language_code?: string;
+    is_premium?: boolean;
+  },
+  location?: { latitude: number; longitude: number },
+) {
+  await db
+    .prepare(
+      `INSERT INTO users (telegram_id, first_name, last_name, username, language_code, is_premium, last_location_lat, last_location_lon, last_active_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(telegram_id) DO UPDATE SET
+         first_name = excluded.first_name,
+         last_name = excluded.last_name,
+         username = excluded.username,
+         language_code = excluded.language_code,
+         is_premium = excluded.is_premium,
+         last_location_lat = COALESCE(excluded.last_location_lat, last_location_lat),
+         last_location_lon = COALESCE(excluded.last_location_lon, last_location_lon),
+         last_active_at = datetime('now'),
+         updated_at = datetime('now')`,
+    )
+    .bind(
+      from.id,
+      from.first_name,
+      from.last_name ?? null,
+      from.username ?? null,
+      from.language_code ?? null,
+      from.is_premium ? 1 : 0,
+      location?.latitude ?? null,
+      location?.longitude ?? null,
+    )
+    .run();
+}
+
 // Haversine formula — returns distance in km
 function haversine(
   lat1: number,
@@ -76,6 +117,11 @@ app.post("/webhook", async (c) => {
   if (!message) return c.json({ ok: true });
 
   const chatId = message.chat.id;
+
+  // Save user info
+  if (message.from) {
+    await upsertUser(c.env.DB, message.from, message.location ?? undefined);
+  }
 
   // Handle /start command
   if (message.text === "/start") {
