@@ -15,8 +15,28 @@ type Station = {
 
 const app = new Hono<{ Bindings: Bindings }>().basePath("/bot");
 
+// Fetch user's profile photo file_id
+async function getUserPhotoFileId(
+  token: string,
+  userId: number,
+): Promise<string | null> {
+  const res = await fetch(
+    `https://api.telegram.org/bot${token}/getUserProfilePhotos?user_id=${userId}&limit=1`,
+  );
+  const data = (await res.json()) as {
+    ok: boolean;
+    result?: { photos: { file_id: string }[][] };
+  };
+  if (data.ok && data.result && data.result.photos.length > 0) {
+    const sizes = data.result.photos[0];
+    return sizes[sizes.length - 1].file_id;
+  }
+  return null;
+}
+
 // Save or update user info from Telegram
 async function upsertUser(
+  token: string,
   db: D1Database,
   from: {
     id: number;
@@ -28,16 +48,19 @@ async function upsertUser(
   },
   location?: { latitude: number; longitude: number },
 ) {
+  const photoFileId = await getUserPhotoFileId(token, from.id);
+
   await db
     .prepare(
-      `INSERT INTO users (telegram_id, first_name, last_name, username, language_code, is_premium, last_location_lat, last_location_lon, last_active_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `INSERT INTO users (telegram_id, first_name, last_name, username, language_code, is_premium, photo_file_id, last_location_lat, last_location_lon, last_active_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(telegram_id) DO UPDATE SET
          first_name = excluded.first_name,
          last_name = excluded.last_name,
          username = excluded.username,
          language_code = excluded.language_code,
          is_premium = excluded.is_premium,
+         photo_file_id = COALESCE(excluded.photo_file_id, photo_file_id),
          last_location_lat = COALESCE(excluded.last_location_lat, last_location_lat),
          last_location_lon = COALESCE(excluded.last_location_lon, last_location_lon),
          last_active_at = datetime('now'),
@@ -50,6 +73,7 @@ async function upsertUser(
       from.username ?? null,
       from.language_code ?? null,
       from.is_premium ? 1 : 0,
+      photoFileId,
       location?.latitude ?? null,
       location?.longitude ?? null,
     )
@@ -120,7 +144,7 @@ app.post("/webhook", async (c) => {
 
   // Save user info
   if (message.from) {
-    await upsertUser(c.env.DB, message.from, message.location ?? undefined);
+    await upsertUser(token, c.env.DB, message.from, message.location ?? undefined);
   }
 
   // Handle /start command
