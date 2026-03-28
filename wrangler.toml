@@ -6,4 +6,4 @@ pages_build_output_dir = "dist"
 [[d1_databases]]
 binding = "DB"
 database_name = "charging-stations-db"
-database_id = "fee96f11-8169-4ec1-bd56-37877a2fe6ff"
+database_id = "a34e22d7-527e-4bbe-88e0-b1cfc9a8f33b"
