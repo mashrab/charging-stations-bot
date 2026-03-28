@@ -82,7 +82,7 @@ app.post("/webhook", async (c) => {
     await sendMessage(
       token,
       chatId,
-      "Assalomu alaykum! 👋\n\nMen sizga eng yaqin TOK BOR zaryadlash stansiyasini topishga yordam beraman.\n\n📍 Joylashuvingizni yuboring va men sizga eng yaqin stansiyani ko'rsataman.",
+      "Assalomu alaykum! 👋\n\nMen sizga eng yaqin elektromobil zaryadlash stansiyasini topishga yordam beraman.\n\n📍 Joylashuvingizni yuboring — men sizga eng yaqin stansiyani ko'rsataman.",
       {
         reply_markup: {
           keyboard: [
