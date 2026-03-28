@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "include": ["/*"],
+  "exclude": ["/assets/*", "/favicon.svg", "/icons.svg", "/sw.js", "/workbox-*", "/registerSW.js", "/manifest.webmanifest", "/_routes.json"]
+}

@@ -1,0 +1,9 @@
+name = "charging-stations-bot"
+compatibility_date = "2026-03-15"
+compatibility_flags = ["nodejs_compat"]
+pages_build_output_dir = "dist"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "charging-stations-db"
+database_id = "fee96f11-8169-4ec1-bd56-37877a2fe6ff"
