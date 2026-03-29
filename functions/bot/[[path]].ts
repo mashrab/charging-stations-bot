@@ -86,7 +86,7 @@ async function upsertUser(
     .run();
 }
 
-// Log a request
+// Log a request — returns the log id for click tracking
 async function logRequest(
   db: D1Database,
   telegramId: number,
@@ -95,14 +95,15 @@ async function logRequest(
   userLon?: number,
   stationId?: number,
   distanceKm?: number,
-) {
-  await db
+): Promise<number | null> {
+  const result = await db
     .prepare(
       `INSERT INTO request_logs (telegram_id, request_type, user_lat, user_lon, nearest_station_id, distance_km)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
     )
     .bind(telegramId, type, userLat ?? null, userLon ?? null, stationId ?? null, distanceKm ?? null)
-    .run();
+    .first<{ id: number }>();
+  return result?.id ?? null;
 }
 
 // Check if user is a brand owner
@@ -467,15 +468,18 @@ app.post("/webhook", async (c) => {
     }
 
     // Log the location request
-    await logRequest(c.env.DB, telegramId!, "location", userLat, userLon, nearest.id, minDist);
+    const logId = await logRequest(c.env.DB, telegramId!, "location", userLat, userLon, nearest.id, minDist);
 
     const distText = minDist < 1
       ? `${Math.round(minDist * 1000)} m`
       : `${minDist.toFixed(1)} km`;
 
-    const yandexUrl = `https://yandex.uz/maps/?rtext=${userLat},${userLon}~${nearest.latitude},${nearest.longitude}&rtt=auto`;
-    const googleUrl = `https://www.google.com/maps/dir/${userLat},${userLon}/${nearest.latitude},${nearest.longitude}`;
-    const appleUrl = `https://maps.apple.com/?saddr=${userLat},${userLon}&daddr=${nearest.latitude},${nearest.longitude}&dirflg=d`;
+    const baseUrl = new URL(c.req.url).origin;
+    const redirectBase = `${baseUrl}/bot/redirect?log=${logId}&uid=${telegramId}`;
+
+    const yandexUrl = `${redirectBase}&map=yandex&lat=${userLat}&lon=${userLon}&slat=${nearest.latitude}&slon=${nearest.longitude}`;
+    const googleUrl = `${redirectBase}&map=google&lat=${userLat}&lon=${userLon}&slat=${nearest.latitude}&slon=${nearest.longitude}`;
+    const appleUrl = `${redirectBase}&map=apple&lat=${userLat}&lon=${userLon}&slat=${nearest.latitude}&slon=${nearest.longitude}`;
 
     await sendVenue(
       token,
@@ -513,6 +517,48 @@ app.post("/webhook", async (c) => {
   );
 
   return c.json({ ok: true });
+});
+
+// ── Redirect route for map click tracking ─────────────────────
+
+app.get("/redirect", async (c) => {
+  const logId = c.req.query("log");
+  const uid = c.req.query("uid");
+  const map = c.req.query("map");
+  const lat = c.req.query("lat");
+  const lon = c.req.query("lon");
+  const slat = c.req.query("slat");
+  const slon = c.req.query("slon");
+
+  if (!map || !lat || !lon || !slat || !slon) {
+    return c.text("Missing parameters", 400);
+  }
+
+  // Log the click
+  if (logId && uid) {
+    await c.env.DB
+      .prepare("INSERT INTO map_clicks (request_log_id, telegram_id, map_type) VALUES (?, ?, ?)")
+      .bind(Number(logId), Number(uid), map)
+      .run();
+  }
+
+  // Build the actual map URL
+  let mapUrl: string;
+  switch (map) {
+    case "yandex":
+      mapUrl = `https://yandex.uz/maps/?rtext=${lat},${lon}~${slat},${slon}&rtt=auto`;
+      break;
+    case "google":
+      mapUrl = `https://www.google.com/maps/dir/${lat},${lon}/${slat},${slon}`;
+      break;
+    case "apple":
+      mapUrl = `https://maps.apple.com/?saddr=${lat},${lon}&daddr=${slat},${slon}&dirflg=d`;
+      break;
+    default:
+      return c.text("Unknown map type", 400);
+  }
+
+  return c.redirect(mapUrl, 302);
 });
 
 export const onRequest = handle(app);
