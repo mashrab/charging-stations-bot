@@ -13,6 +13,12 @@ type Station = {
   longitude: number;
 };
 
+type BrandOwner = {
+  brand_id: number;
+  brand_name: string;
+  role: string;
+};
+
 const app = new Hono<{ Bindings: Bindings }>().basePath("/bot");
 
 // Fetch user's profile photo file_id
@@ -80,6 +86,42 @@ async function upsertUser(
     .run();
 }
 
+// Log a request
+async function logRequest(
+  db: D1Database,
+  telegramId: number,
+  type: string,
+  userLat?: number,
+  userLon?: number,
+  stationId?: number,
+  distanceKm?: number,
+) {
+  await db
+    .prepare(
+      `INSERT INTO request_logs (telegram_id, request_type, user_lat, user_lon, nearest_station_id, distance_km)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(telegramId, type, userLat ?? null, userLon ?? null, stationId ?? null, distanceKm ?? null)
+    .run();
+}
+
+// Check if user is a brand owner
+async function getBrandOwner(
+  db: D1Database,
+  telegramId: number,
+): Promise<BrandOwner | null> {
+  const row = await db
+    .prepare(
+      `SELECT bo.brand_id, b.name as brand_name, bo.role
+       FROM brand_owners bo
+       JOIN brands b ON b.id = bo.brand_id
+       WHERE bo.telegram_id = ?`,
+    )
+    .bind(telegramId)
+    .first<BrandOwner>();
+  return row ?? null;
+}
+
 // Haversine formula — returns distance in km
 function haversine(
   lat1: number,
@@ -106,7 +148,7 @@ async function sendMessage(
   await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text, ...extra }),
+    body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML", ...extra }),
   });
 }
 
@@ -133,6 +175,193 @@ async function sendVenue(
   });
 }
 
+// ── Owner stats commands ──────────────────────────────────────
+
+async function handleStats(
+  token: string,
+  db: D1Database,
+  chatId: number,
+  owner: BrandOwner,
+) {
+  const stats = await db
+    .prepare(
+      `SELECT
+        (SELECT COUNT(*) FROM request_logs rl JOIN charging_stations cs ON cs.id = rl.nearest_station_id WHERE cs.brand_id = ? AND rl.request_type = 'location' AND date(rl.created_at) = date('now')) as today,
+        (SELECT COUNT(*) FROM request_logs rl JOIN charging_stations cs ON cs.id = rl.nearest_station_id WHERE cs.brand_id = ? AND rl.request_type = 'location' AND rl.created_at >= datetime('now', '-7 days')) as week,
+        (SELECT COUNT(*) FROM request_logs rl JOIN charging_stations cs ON cs.id = rl.nearest_station_id WHERE cs.brand_id = ? AND rl.request_type = 'location' AND rl.created_at >= datetime('now', '-30 days')) as month,
+        (SELECT COUNT(DISTINCT rl.telegram_id) FROM request_logs rl JOIN charging_stations cs ON cs.id = rl.nearest_station_id WHERE cs.brand_id = ? AND rl.request_type = 'location') as total_users,
+        (SELECT ROUND(AVG(rl.distance_km), 1) FROM request_logs rl JOIN charging_stations cs ON cs.id = rl.nearest_station_id WHERE cs.brand_id = ? AND rl.request_type = 'location') as avg_distance`,
+    )
+    .bind(owner.brand_id, owner.brand_id, owner.brand_id, owner.brand_id, owner.brand_id)
+    .first<{ today: number; week: number; month: number; total_users: number; avg_distance: number }>();
+
+  const s = stats!;
+  await sendMessage(
+    token,
+    chatId,
+    `📊 <b>${owner.brand_name} — Statistika</b>\n\n` +
+      `▫️ Bugun: <b>${s.today}</b> so'rov\n` +
+      `▫️ Hafta: <b>${s.week}</b> so'rov\n` +
+      `▫️ Oy: <b>${s.month}</b> so'rov\n` +
+      `▫️ Jami foydalanuvchilar: <b>${s.total_users}</b>\n` +
+      `▫️ O'rtacha masofa: <b>${s.avg_distance ?? 0}</b> km`,
+  );
+}
+
+async function handleToday(
+  token: string,
+  db: D1Database,
+  chatId: number,
+  owner: BrandOwner,
+) {
+  const { results } = await db
+    .prepare(
+      `SELECT strftime('%H', rl.created_at) as hour, COUNT(*) as cnt, COUNT(DISTINCT rl.telegram_id) as users
+       FROM request_logs rl
+       JOIN charging_stations cs ON cs.id = rl.nearest_station_id
+       WHERE cs.brand_id = ? AND rl.request_type = 'location' AND date(rl.created_at) = date('now')
+       GROUP BY hour ORDER BY hour`,
+    )
+    .bind(owner.brand_id)
+    .all<{ hour: string; cnt: number; users: number }>();
+
+  if (!results || results.length === 0) {
+    await sendMessage(token, chatId, `📊 <b>${owner.brand_name}</b>\n\nBugun hali so'rovlar yo'q.`);
+    return;
+  }
+
+  let text = `📊 <b>${owner.brand_name} — Bugun</b>\n\n`;
+  text += `<code>Soat  So'rov  Foydalanuvchi</code>\n`;
+  for (const r of results) {
+    text += `<code>${r.hour}:00   ${String(r.cnt).padStart(5)}   ${String(r.users).padStart(5)}</code>\n`;
+  }
+  await sendMessage(token, chatId, text);
+}
+
+async function handleWeek(
+  token: string,
+  db: D1Database,
+  chatId: number,
+  owner: BrandOwner,
+) {
+  const { results } = await db
+    .prepare(
+      `SELECT date(rl.created_at) as day, COUNT(*) as cnt, COUNT(DISTINCT rl.telegram_id) as users
+       FROM request_logs rl
+       JOIN charging_stations cs ON cs.id = rl.nearest_station_id
+       WHERE cs.brand_id = ? AND rl.request_type = 'location' AND rl.created_at >= datetime('now', '-7 days')
+       GROUP BY day ORDER BY day`,
+    )
+    .bind(owner.brand_id)
+    .all<{ day: string; cnt: number; users: number }>();
+
+  if (!results || results.length === 0) {
+    await sendMessage(token, chatId, `📊 <b>${owner.brand_name}</b>\n\nSo'nggi 7 kunda so'rovlar yo'q.`);
+    return;
+  }
+
+  let text = `📊 <b>${owner.brand_name} — So'nggi 7 kun</b>\n\n`;
+  text += `<code>Sana        So'rov  Foydalanuvchi</code>\n`;
+  for (const r of results) {
+    text += `<code>${r.day}   ${String(r.cnt).padStart(5)}   ${String(r.users).padStart(5)}</code>\n`;
+  }
+  await sendMessage(token, chatId, text);
+}
+
+async function handleMonth(
+  token: string,
+  db: D1Database,
+  chatId: number,
+  owner: BrandOwner,
+) {
+  const { results } = await db
+    .prepare(
+      `SELECT date(rl.created_at) as day, COUNT(*) as cnt, COUNT(DISTINCT rl.telegram_id) as users
+       FROM request_logs rl
+       JOIN charging_stations cs ON cs.id = rl.nearest_station_id
+       WHERE cs.brand_id = ? AND rl.request_type = 'location' AND rl.created_at >= datetime('now', '-30 days')
+       GROUP BY day ORDER BY day`,
+    )
+    .bind(owner.brand_id)
+    .all<{ day: string; cnt: number; users: number }>();
+
+  if (!results || results.length === 0) {
+    await sendMessage(token, chatId, `📊 <b>${owner.brand_name}</b>\n\nSo'nggi 30 kunda so'rovlar yo'q.`);
+    return;
+  }
+
+  let text = `📊 <b>${owner.brand_name} — So'nggi 30 kun</b>\n\n`;
+  text += `<code>Sana        So'rov  Foydalanuvchi</code>\n`;
+  for (const r of results) {
+    text += `<code>${r.day}   ${String(r.cnt).padStart(5)}   ${String(r.users).padStart(5)}</code>\n`;
+  }
+  await sendMessage(token, chatId, text);
+}
+
+async function handleTop(
+  token: string,
+  db: D1Database,
+  chatId: number,
+  owner: BrandOwner,
+) {
+  const { results } = await db
+    .prepare(
+      `SELECT cs.name, COUNT(*) as cnt, COUNT(DISTINCT rl.telegram_id) as users
+       FROM request_logs rl
+       JOIN charging_stations cs ON cs.id = rl.nearest_station_id
+       WHERE cs.brand_id = ? AND rl.request_type = 'location'
+       GROUP BY cs.id ORDER BY cnt DESC LIMIT 5`,
+    )
+    .bind(owner.brand_id)
+    .all<{ name: string; cnt: number; users: number }>();
+
+  if (!results || results.length === 0) {
+    await sendMessage(token, chatId, `📊 <b>${owner.brand_name}</b>\n\nHali ma'lumot yo'q.`);
+    return;
+  }
+
+  let text = `📊 <b>${owner.brand_name} — Top stansiyalar</b>\n\n`;
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    text += `${i + 1}. <b>${r.name}</b>\n   So'rovlar: ${r.cnt} | Foydalanuvchilar: ${r.users}\n\n`;
+  }
+  await sendMessage(token, chatId, text);
+}
+
+async function handleUsers(
+  token: string,
+  db: D1Database,
+  chatId: number,
+  owner: BrandOwner,
+) {
+  const stats = await db
+    .prepare(
+      `SELECT
+        COUNT(DISTINCT rl.telegram_id) as total,
+        (SELECT COUNT(DISTINCT rl2.telegram_id) FROM request_logs rl2 JOIN charging_stations cs2 ON cs2.id = rl2.nearest_station_id WHERE cs2.brand_id = ? AND rl2.request_type = 'location' AND date(rl2.created_at) = date('now')) as dau,
+        (SELECT COUNT(DISTINCT rl2.telegram_id) FROM request_logs rl2 JOIN charging_stations cs2 ON cs2.id = rl2.nearest_station_id WHERE cs2.brand_id = ? AND rl2.request_type = 'location' AND rl2.created_at >= datetime('now', '-7 days')) as wau,
+        (SELECT COUNT(DISTINCT rl2.telegram_id) FROM request_logs rl2 JOIN charging_stations cs2 ON cs2.id = rl2.nearest_station_id WHERE cs2.brand_id = ? AND rl2.request_type = 'location' AND rl2.created_at >= datetime('now', '-30 days')) as mau
+       FROM request_logs rl
+       JOIN charging_stations cs ON cs.id = rl.nearest_station_id
+       WHERE cs.brand_id = ? AND rl.request_type = 'location'`,
+    )
+    .bind(owner.brand_id, owner.brand_id, owner.brand_id, owner.brand_id)
+    .first<{ total: number; dau: number; wau: number; mau: number }>();
+
+  const s = stats!;
+  await sendMessage(
+    token,
+    chatId,
+    `👥 <b>${owner.brand_name} — Foydalanuvchilar</b>\n\n` +
+      `▫️ DAU (bugun): <b>${s.dau}</b>\n` +
+      `▫️ WAU (hafta): <b>${s.wau}</b>\n` +
+      `▫️ MAU (oy): <b>${s.mau}</b>\n` +
+      `▫️ Jami: <b>${s.total}</b>`,
+  );
+}
+
+// ── Webhook handler ───────────────────────────────────────────
+
 app.post("/webhook", async (c) => {
   const token = c.env.TELEGRAM_BOT_TOKEN;
   const update = await c.req.json();
@@ -141,27 +370,73 @@ app.post("/webhook", async (c) => {
   if (!message) return c.json({ ok: true });
 
   const chatId = message.chat.id;
+  const telegramId = message.from?.id;
 
   // Save user info
   if (message.from) {
     await upsertUser(token, c.env.DB, message.from, message.location ?? undefined);
   }
 
+  // Check if user is a brand owner
+  const owner = telegramId ? await getBrandOwner(c.env.DB, telegramId) : null;
+
+  // Handle owner commands
+  if (owner && message.text) {
+    const cmd = message.text.trim().toLowerCase();
+    switch (cmd) {
+      case "/stats":
+        await logRequest(c.env.DB, telegramId!, "owner_stats");
+        await handleStats(token, c.env.DB, chatId, owner);
+        return c.json({ ok: true });
+      case "/today":
+        await logRequest(c.env.DB, telegramId!, "owner_today");
+        await handleToday(token, c.env.DB, chatId, owner);
+        return c.json({ ok: true });
+      case "/week":
+        await logRequest(c.env.DB, telegramId!, "owner_week");
+        await handleWeek(token, c.env.DB, chatId, owner);
+        return c.json({ ok: true });
+      case "/month":
+        await logRequest(c.env.DB, telegramId!, "owner_month");
+        await handleMonth(token, c.env.DB, chatId, owner);
+        return c.json({ ok: true });
+      case "/top":
+        await logRequest(c.env.DB, telegramId!, "owner_top");
+        await handleTop(token, c.env.DB, chatId, owner);
+        return c.json({ ok: true });
+      case "/users":
+        await logRequest(c.env.DB, telegramId!, "owner_users");
+        await handleUsers(token, c.env.DB, chatId, owner);
+        return c.json({ ok: true });
+    }
+  }
+
   // Handle /start command
   if (message.text === "/start") {
-    await sendMessage(
-      token,
-      chatId,
-      "Assalomu alaykum! 👋\n\nMen sizga eng yaqin elektromobil zaryadlash stansiyasini topishga yordam beraman.\n\n📍 Joylashuvingizni yuboring — men sizga eng yaqin stansiyani ko'rsataman.",
-      {
-        reply_markup: {
-          keyboard: [
-            [{ text: "📍 Joylashuvimni yuborish", request_location: true }],
-          ],
-          resize_keyboard: true,
-        },
-      },
-    );
+    await logRequest(c.env.DB, telegramId!, "start");
+
+    const keyboard: { text: string; request_location?: boolean }[][] = [
+      [{ text: "📍 Joylashuvimni yuborish", request_location: true }],
+    ];
+
+    let welcomeText =
+      "Assalomu alaykum! 👋\n\nMen sizga eng yaqin elektromobil zaryadlash stansiyasini topishga yordam beraman.\n\n📍 Joylashuvingizni yuboring — men sizga eng yaqin stansiyani ko'rsataman.";
+
+    if (owner) {
+      welcomeText +=
+        `\n\n🔑 <b>${owner.brand_name}</b> admin sifatida kirdingiz.\n\n` +
+        `Buyruqlar:\n` +
+        `/stats — Umumiy statistika\n` +
+        `/today — Bugungi ko'rsatkichlar\n` +
+        `/week — Haftalik ko'rsatkichlar\n` +
+        `/month — Oylik ko'rsatkichlar\n` +
+        `/top — Top stansiyalar\n` +
+        `/users — DAU / WAU / MAU`;
+    }
+
+    await sendMessage(token, chatId, welcomeText, {
+      reply_markup: { keyboard, resize_keyboard: true },
+    });
     return c.json({ ok: true });
   }
 
@@ -191,6 +466,9 @@ app.post("/webhook", async (c) => {
       }
     }
 
+    // Log the location request
+    await logRequest(c.env.DB, telegramId!, "location", userLat, userLon, nearest.id, minDist);
+
     const distText = minDist < 1
       ? `${Math.round(minDist * 1000)} m`
       : `${minDist.toFixed(1)} km`;
@@ -219,6 +497,7 @@ app.post("/webhook", async (c) => {
   }
 
   // Unknown message
+  await logRequest(c.env.DB, telegramId!, "other");
   await sendMessage(
     token,
     chatId,
