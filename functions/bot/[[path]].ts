@@ -381,34 +381,29 @@ app.post("/webhook", async (c) => {
   // Check if user is a brand owner
   const owner = telegramId ? await getBrandOwner(c.env.DB, telegramId) : null;
 
-  // Handle owner commands
+  // Handle owner commands (slash commands + keyboard buttons)
   if (owner && message.text) {
-    const cmd = message.text.trim().toLowerCase();
-    switch (cmd) {
-      case "/stats":
-        await logRequest(c.env.DB, telegramId!, "owner_stats");
-        await handleStats(token, c.env.DB, chatId, owner);
-        return c.json({ ok: true });
-      case "/today":
-        await logRequest(c.env.DB, telegramId!, "owner_today");
-        await handleToday(token, c.env.DB, chatId, owner);
-        return c.json({ ok: true });
-      case "/week":
-        await logRequest(c.env.DB, telegramId!, "owner_week");
-        await handleWeek(token, c.env.DB, chatId, owner);
-        return c.json({ ok: true });
-      case "/month":
-        await logRequest(c.env.DB, telegramId!, "owner_month");
-        await handleMonth(token, c.env.DB, chatId, owner);
-        return c.json({ ok: true });
-      case "/top":
-        await logRequest(c.env.DB, telegramId!, "owner_top");
-        await handleTop(token, c.env.DB, chatId, owner);
-        return c.json({ ok: true });
-      case "/users":
-        await logRequest(c.env.DB, telegramId!, "owner_users");
-        await handleUsers(token, c.env.DB, chatId, owner);
-        return c.json({ ok: true });
+    const cmd = message.text.trim();
+    const ownerCmd =
+      cmd === "/stats" || cmd === "📊 Statistika" ? "stats" :
+      cmd === "/today" || cmd === "📅 Bugun" ? "today" :
+      cmd === "/week" || cmd === "📆 Hafta" ? "week" :
+      cmd === "/month" || cmd === "📆 Oy" ? "month" :
+      cmd === "/top" || cmd === "🏆 Top" ? "top" :
+      cmd === "/users" || cmd === "👥 Foydalanuvchilar" ? "users" :
+      null;
+
+    if (ownerCmd) {
+      await logRequest(c.env.DB, telegramId!, `owner_${ownerCmd}`);
+      switch (ownerCmd) {
+        case "stats": await handleStats(token, c.env.DB, chatId, owner); break;
+        case "today": await handleToday(token, c.env.DB, chatId, owner); break;
+        case "week": await handleWeek(token, c.env.DB, chatId, owner); break;
+        case "month": await handleMonth(token, c.env.DB, chatId, owner); break;
+        case "top": await handleTop(token, c.env.DB, chatId, owner); break;
+        case "users": await handleUsers(token, c.env.DB, chatId, owner); break;
+      }
+      return c.json({ ok: true });
     }
   }
 
@@ -424,15 +419,13 @@ app.post("/webhook", async (c) => {
       "Assalomu alaykum! 👋\n\nMen sizga eng yaqin elektromobil zaryadlash stansiyasini topishga yordam beraman.\n\n📍 Joylashuvingizni yuboring — men sizga eng yaqin stansiyani ko'rsataman.";
 
     if (owner) {
+      keyboard.push(
+        [{ text: "📊 Statistika" }, { text: "📅 Bugun" }],
+        [{ text: "📆 Hafta" }, { text: "📆 Oy" }],
+        [{ text: "🏆 Top" }, { text: "👥 Foydalanuvchilar" }],
+      );
       welcomeText +=
-        `\n\n🔑 <b>${owner.brand_name}</b> admin sifatida kirdingiz.\n\n` +
-        `Buyruqlar:\n` +
-        `/stats — Umumiy statistika\n` +
-        `/today — Bugungi ko'rsatkichlar\n` +
-        `/week — Haftalik ko'rsatkichlar\n` +
-        `/month — Oylik ko'rsatkichlar\n` +
-        `/top — Top stansiyalar\n` +
-        `/users — DAU / WAU / MAU`;
+        `\n\n🔑 <b>${owner.brand_name}</b> admin sifatida kirdingiz.`;
     }
 
     await sendMessage(token, chatId, welcomeText, {
