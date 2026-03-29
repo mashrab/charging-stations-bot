@@ -476,7 +476,7 @@ app.post("/webhook", async (c) => {
 
     const yandexUrl = `https://yandex.uz/maps/?rtext=${userLat},${userLon}~${nearest.latitude},${nearest.longitude}&rtt=auto`;
     const googleUrl = `https://www.google.com/maps/dir/${userLat},${userLon}/${nearest.latitude},${nearest.longitude}`;
-    const appleUrl = `https://maps.apple.com/?saddr=${userLat},${userLon}&daddr=${nearest.latitude},${nearest.longitude}&dirflg=d`;
+    const otherMapsUrl = `https://maps.apple.com/?daddr=${nearest.latitude},${nearest.longitude}&saddr=${userLat},${userLon}`;
 
     await sendVenue(
       token,
@@ -489,7 +489,7 @@ app.post("/webhook", async (c) => {
         inline_keyboard: [
           [{ text: "🗺 Yandex Xarita", url: yandexUrl }],
           [{ text: "🗺 Google Maps", url: googleUrl }],
-          [{ text: "🗺 Apple Maps", url: appleUrl }],
+          [{ text: "🗺 Boshqa xarita ilova", url: otherMapsUrl }],
         ],
       },
     );
