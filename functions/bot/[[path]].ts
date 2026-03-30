@@ -413,14 +413,13 @@ app.get("/r", async (c) => {
   var appUrl = ${JSON.stringify(appUrl)};
   var webUrl = ${JSON.stringify(url)};
   var fallback = document.getElementById('fallback');
-  var start = Date.now();
 
   // Try opening native app
   window.location = appUrl;
 
-  // If still here after 1.5s, app is not installed — show fallback link & redirect
+  // If still visible after 1.5s, app didn't open — fallback to web
   setTimeout(function() {
-    if (Date.now() - start < 3000) {
+    if (!document.hidden) {
       fallback.style.display = 'inline-block';
       window.location = webUrl;
     }
