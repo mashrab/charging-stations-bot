@@ -361,74 +361,6 @@ async function handleUsers(
   );
 }
 
-// ── Map click redirect ───────────────────────────────────────
-
-app.get("/r", async (c) => {
-  const url = c.req.query("url");       // web fallback URL
-  const appUrl = c.req.query("app");    // native app URL scheme
-  const mapType = c.req.query("t");
-  const telegramId = c.req.query("uid");
-  const requestLogId = c.req.query("rid");
-
-  if (!url) return c.text("Missing url", 400);
-
-  // Log the click (non-blocking)
-  if (mapType && telegramId) {
-    c.executionCtx.waitUntil(
-      c.env.DB.prepare(
-        `INSERT INTO map_clicks (request_log_id, telegram_id, map_type) VALUES (?, ?, ?)`,
-      )
-        .bind(
-          requestLogId ? Number(requestLogId) : null,
-          Number(telegramId),
-          mapType,
-        )
-        .run(),
-    );
-  }
-
-  // If no native app URL, just redirect
-  if (!appUrl) return c.redirect(url, 302);
-
-  // Return HTML that tries native app first, falls back to web
-  return c.html(`<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Xaritaga o'tish...</title>
-<style>
-  body { font-family: -apple-system, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #f5f5f5; text-align: center; }
-  .container { padding: 2rem; }
-  p { color: #666; font-size: 1.1rem; }
-  a { display: inline-block; margin-top: 1rem; padding: 0.8rem 2rem; background: #2196F3; color: #fff; text-decoration: none; border-radius: 8px; font-size: 1rem; }
-</style>
-</head>
-<body>
-<div class="container">
-  <p>Xarita ilovasi ochilmoqda...</p>
-  <a id="fallback" href="${url}" style="display:none">Xaritada ochish</a>
-</div>
-<script>
-  var appUrl = ${JSON.stringify(appUrl)};
-  var webUrl = ${JSON.stringify(url)};
-  var fallback = document.getElementById('fallback');
-
-  // Try opening native app
-  window.location = appUrl;
-
-  // If still visible after 1.5s, app didn't open — fallback to web
-  setTimeout(function() {
-    if (!document.hidden) {
-      fallback.style.display = 'inline-block';
-      window.location = webUrl;
-    }
-  }, 1500);
-</script>
-</body>
-</html>`);
-});
-
 // ── Webhook handler ───────────────────────────────────────────
 
 app.post("/webhook", async (c) => {
@@ -529,25 +461,15 @@ app.post("/webhook", async (c) => {
     }
 
     // Log the location request
-    const logId = await logRequest(c.env.DB, telegramId!, "location", userLat, userLon, nearest.id, minDist);
+    await logRequest(c.env.DB, telegramId!, "location", userLat, userLon, nearest.id, minDist);
 
     const distText = minDist < 1
       ? `${Math.round(minDist * 1000)} m`
       : `${minDist.toFixed(1)} km`;
 
-    // Web URLs (fallback)
     const yandexUrl = `https://yandex.uz/maps/?rtext=${userLat},${userLon}~${nearest.latitude},${nearest.longitude}&rtt=auto`;
     const googleUrl = `https://www.google.com/maps/dir/${userLat},${userLon}/${nearest.latitude},${nearest.longitude}`;
     const otherMapsUrl = `https://maps.apple.com/?daddr=${nearest.latitude},${nearest.longitude}&saddr=${userLat},${userLon}`;
-
-    // Native app URL schemes
-    const yandexApp = `yandexmaps://build_route_on_map/?lat_from=${userLat}&lon_from=${userLon}&lat_to=${nearest.latitude}&lon_to=${nearest.longitude}`;
-    const googleApp = `comgooglemaps://?saddr=${userLat},${userLon}&daddr=${nearest.latitude},${nearest.longitude}&directionsmode=driving`;
-
-    // Build redirect URLs for click tracking (with native app + web fallback)
-    const baseRedirect = `https://charging-stations-bot.pages.dev/bot/r`;
-    const mkRedirect = (mapType: string, targetUrl: string, appSchemeUrl?: string) =>
-      `${baseRedirect}?t=${mapType}&uid=${telegramId}&rid=${logId}&url=${encodeURIComponent(targetUrl)}${appSchemeUrl ? `&app=${encodeURIComponent(appSchemeUrl)}` : ""}`;
 
     await sendVenue(
       token,
@@ -558,9 +480,9 @@ app.post("/webhook", async (c) => {
       `📏 ${distText} masofada`,
       {
         inline_keyboard: [
-          [{ text: "🗺 Yandex Xarita", url: mkRedirect("yandex", yandexUrl, yandexApp) }],
-          [{ text: "🗺 Google Maps", url: mkRedirect("google", googleUrl, googleApp) }],
-          [{ text: "🗺 Boshqa xarita ilova", url: mkRedirect("apple", otherMapsUrl) }],
+          [{ text: "🗺 Yandex Xarita", url: yandexUrl }],
+          [{ text: "🗺 Google Maps", url: googleUrl }],
+          [{ text: "🗺 Boshqa xarita ilova", url: otherMapsUrl }],
         ],
       },
     );
