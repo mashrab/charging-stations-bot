@@ -361,6 +361,34 @@ async function handleUsers(
   );
 }
 
+// ── Map click redirect ───────────────────────────────────────
+
+app.get("/r", async (c) => {
+  const url = c.req.query("url");
+  const mapType = c.req.query("t");
+  const telegramId = c.req.query("uid");
+  const requestLogId = c.req.query("rid");
+
+  if (!url) return c.text("Missing url", 400);
+
+  // Log the click (non-blocking — don't delay the redirect)
+  if (mapType && telegramId) {
+    c.executionCtx.waitUntil(
+      c.env.DB.prepare(
+        `INSERT INTO map_clicks (request_log_id, telegram_id, map_type) VALUES (?, ?, ?)`,
+      )
+        .bind(
+          requestLogId ? Number(requestLogId) : null,
+          Number(telegramId),
+          mapType,
+        )
+        .run(),
+    );
+  }
+
+  return c.redirect(url, 302);
+});
+
 // ── Webhook handler ───────────────────────────────────────────
 
 app.post("/webhook", async (c) => {
@@ -461,7 +489,7 @@ app.post("/webhook", async (c) => {
     }
 
     // Log the location request
-    await logRequest(c.env.DB, telegramId!, "location", userLat, userLon, nearest.id, minDist);
+    const logId = await logRequest(c.env.DB, telegramId!, "location", userLat, userLon, nearest.id, minDist);
 
     const distText = minDist < 1
       ? `${Math.round(minDist * 1000)} m`
@@ -470,6 +498,11 @@ app.post("/webhook", async (c) => {
     const yandexUrl = `https://yandex.uz/maps/?rtext=${userLat},${userLon}~${nearest.latitude},${nearest.longitude}&rtt=auto`;
     const googleUrl = `https://www.google.com/maps/dir/${userLat},${userLon}/${nearest.latitude},${nearest.longitude}`;
     const otherMapsUrl = `https://maps.apple.com/?daddr=${nearest.latitude},${nearest.longitude}&saddr=${userLat},${userLon}`;
+
+    // Build redirect URLs for click tracking
+    const baseRedirect = `https://charging-stations-bot.pages.dev/bot/r`;
+    const mkRedirect = (mapType: string, targetUrl: string) =>
+      `${baseRedirect}?t=${mapType}&uid=${telegramId}&rid=${logId}&url=${encodeURIComponent(targetUrl)}`;
 
     await sendVenue(
       token,
@@ -480,9 +513,9 @@ app.post("/webhook", async (c) => {
       `📏 ${distText} masofada`,
       {
         inline_keyboard: [
-          [{ text: "🗺 Yandex Xarita", url: yandexUrl }],
-          [{ text: "🗺 Google Maps", url: googleUrl }],
-          [{ text: "🗺 Boshqa xarita ilova", url: otherMapsUrl }],
+          [{ text: "🗺 Yandex Xarita", url: mkRedirect("yandex", yandexUrl) }],
+          [{ text: "🗺 Google Maps", url: mkRedirect("google", googleUrl) }],
+          [{ text: "🗺 Boshqa xarita ilova", url: mkRedirect("apple", otherMapsUrl) }],
         ],
       },
     );
